@@ -1,0 +1,195 @@
+---
+title: "Random Forest - Attrition"
+author: "Adrian Jenkins"
+date: "9/3/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+listOfPackages <-c("tidyverse","magrittr","tidymodels",
+                   "ROCR","vip", "ranger","recipes","randomForest","caret", "doParallel")
+
+for (i in listOfPackages){
+  if(! i %in% installed.packages()){
+    install.packages(i, dependencies = TRUE)
+  }
+  lapply(i, require, character.only = TRUE)
+  rm(i)
+}
+
+data <- read_csv("dataset/WA_Fn-UseC_-HR-Employee-Attrition.csv")
+attrition <- data
+
+attrition %<>%
+  select(-c(EmployeeCount, EmployeeNumber, NumCompaniesWorked, 
+            Over18, PercentSalaryHike, PerformanceRating, 
+            StandardHours, StockOptionLevel, 
+            TrainingTimesLastYear, TotalWorkingYears, 
+            YearsInCurrentRole, YearsSinceLastPromotion, 
+            YearsWithCurrManager, DailyRate))
+attrition$Attrition <- factor(attrition$Attrition, ordered = TRUE, 
+                              levels = c("No", "Yes"))
+attrition %<>% 
+  mutate_if(is.character,as.factor)
+
+# Data Partitioning
+set.seed(1)
+attrition_split <- initial_split(attrition, strata = Attrition)
+attrition_train <- training(attrition_split)
+attrition_test <- testing(attrition_split)
+attrition_split
+# Recipe
+tree_recipe <- recipe(Attrition ~. , data = attrition_train)
+tree_prep <- prep(tree_recipe)
+juiced <- juice(tree_prep)
+tune_spec <- rand_forest(
+  mtry = tune(),
+  trees = 501,
+  min_n = tune()
+) %>%
+  set_mode("classification") %>%
+  set_engine("ranger")
+# Workflow
+tune_wf <- workflow() %>%
+  add_recipe(tree_recipe) %>%
+  add_model(tune_spec)
+
+```
+  
+The dataset is composed of `r nrow(data)` observations and `r ncol(data)` attributes. For this model we will be using 21 out of the original 35 attributes. The variables to include are the following: "Age", “Attrition”, "Business Travel", "Department", "Distance From Home", "Education", "Education Field", "Environment Satisfaction", “Gender”, “Hourly Rate”, "Job Involvement", "Job Level", "Job Role", "Job Satisfaction", "Marital Status", "Monthly Income", "Monthly Rate", "OverTime", "Relationship Satisfaction", "Work Life Balance" and "Years At Company".
+  
+Dataset contains no missing values and needed transformation has already been done. We will create a random forest model to predict "Attrition", which refers to whether the employee left or not the company.
+  
+The first step is to generate a seed to ensure reproducibility of the results and divide the dataset into a training and a testing set.
+  
+Training data will contain 75% of the original data and the remaining 25% will be for the testing dataset:  
+```{r eval = FALSE}
+set.seed(1)
+attrition_split <- initial_split(attrition, strata = Attrition)
+attrition_train <- training(attrition_split)
+attrition_test <- testing(attrition_split)
+attrition_split
+```
+  
+## Random Forest Model
+```{r}
+modelo_rf <- randomForest(Attrition ~., data = attrition_train, importance = TRUE, proximity = TRUE)
+print(modelo_rf)
+```
+  
+It is observed that the model has an average error of 13.81%. Of the total 1101 observations in the training set, 152 were misclassified and 949 were correctly classified. At each decision point it used four random variables and the number of trees created was 500.
+  
+It is interesting to note the six most important variables considered by the model:
+```{r echo = FALSE}
+feature_importance_filter <- importance(modelo_rf)
+feature_importance_filter <- as.data.frame(feature_importance_filter) 
+my_order <- order( feature_importance_filter$MeanDecreaseGini, decreasing = T)
+feature_importance_filter[my_order,] %>%
+  head()
+```
+  
+These are the first six variables with a higher Mean Decrease Gini. A high value indicates greater importance. It can be seen that the model gave greater weight to the variables "Monthly Income", "Age" and "Monthly Rate". This confirms what we might have expected: monthly income is a determining factor for the employee when deciding whether or not to leave the company. 
+  
+By default, the number of trees constructed by the random forest is 500. However, it is around 220 trees that the error stabilizes. Therefore, there is no justification for generating a larger number of trees.
+```{r echo = FALSE}
+plot(modelo_rf, main = "Error  Per Number Of Trees")
+```
+  
+Once the model has been built, prediction and evaluation are carried out:
+```{r echo = FALSE}
+pred_rf <- predict(modelo_rf, attrition_test, type = "class")
+my_table <- table( attrition_test$Attrition, pred_rf,  dnn = c("Actual", "Prediction")) 
+print(my_table)
+
+TP <- my_table[2,2]
+TN <- my_table[1,1]
+FN <- my_table[2,1]
+FP <- my_table[1,2]
+# Accuracy
+  # = TP + TN / TP+FP+FN+TN
+sprintf("Accuracy: %f", sum(TP,TN)/sum(TP,TN,FN,FP))  
+
+# Precision
+  # = TP / TP + FP
+precision <-  TP/ sum(TP,FP)
+sprintf("Precision: %f", precision)
+
+# Recall / Sensitivity
+  # = TP/ TP + FN 
+recall<- TP/(sum(TP, FN))
+sprintf("Recall: %f", recall)
+
+# SPECIFICITY
+  # = TN / TN + FP 
+specificity <- TN/(sum(TN,FP))
+sprintf("Specificity: %f", specificity)
+
+# F1
+F1 <- 2 * precision * recall / (precision + recall)
+sprintf("F1 score: %f", F1)
+```
+  
+Accuracy is defined as: TP + TN/ SUM(TP, TN, FP, FN). This value establishes how good the constructed model is at predicting the correct category. In this case, the model predicts correctly in 86.4% of the cases.
+  
+Precision is defined as: TP / TP + FP. This value establishes the ratio between the positive predictions made by the model and those that are actually positive. In this case, of all the people who left the company, the model correctly predicts 85.7% of the cases.
+  
+Sensitivity is defined as: TP/TP+FN. This value indicates the ratio that the model has of correctly predicting against actual values. This metric is focused on when the cost of failing a prediction is much higher than that of an erroneous prediction. For this case, of all the people who left the company, the model was correct in 20% of the cases.
+  
+Specificity is defined as: TN/TN+FP. This value represents the ratio in which, out of all the observations belonging to the negative class, how many were correctly predicted by the model. For this case, out of a total of 309 people who did not leave the company, the model correctly predicts 99.3% of the observations.
+  
+The "F1 - Score" is defined as: 2 x (Precision x Recall) / Precision + Recall. This metric is used when a balance between specificity and sensitivity is desired. In this case it has a value of 32.4%.
+  
+The AUC is a graphical representation that illustrates the trade-off between specificity and sensitivity. The closer it approaches the 45-degree diagonal, the less accurate the model. Whereas, the closer it approaches the upper left corner indicates better performance. 
+Below is the ROC Curve and different values where the company should make a decision as a cut-off point, based on its needs and what it is willing to tolerate.
+```{r}
+probs <- predict(modelo_rf, attrition_test, type = "prob")
+pred_for_ROCR <- prediction(probs[,2], attrition_test$Attrition)
+perf <- performance(pred_for_ROCR, "tpr", "fpr")
+plot(perf)
+lines(par()$usr[1:2], par()$usr[3:4])
+```
+  
+The value of the Area Under the Curve (AUC) is important to be able to compare models, later we will try to optimize this model. This would be the value of the momentum:
+```{r echo = FALSE}
+auc.tmp <- performance(pred_for_ROCR,"auc")
+auc <- as.numeric(auc.tmp@y.values)
+print(auc)
+```
+  
+At this point, it is up to the company to decide on the target and the level of tolerance for false positives and negatives. As an example, it is assumed that the company wants to focus on true positives, setting a minimum of 70% of cases.
+```{r echo = FALSE}
+ prob.cuts.1 <- data.frame(cut = perf@alpha.values[[1]], fpr = perf@x.values[[1]],
+tpr = perf@y.values[[1]])
+
+head(prob.cuts.1[prob.cuts.1$tpr >= 0.7,])
+```
+  
+By choosing row number 67, the breakpoint would be 0.236, in this scenario each observation has a 70% probability of being classified as a true positive and a 15.2% probability of being classified as a false positive.
+  
+As an exercise, it is intended to increase the sensitivity since the cost of losing an employee is high and the increase in false positives does not really represent a major impact.
+ 
+### Optimizing Parameters
+Hyper parameters to optimize:
+* 'mtry': number of variables that are randomly selected at each decision point.
+* 'min_n': minimum number of samples needed to split an internal node.
+```{r echo = FALSE}
+set.seed(2)
+trees_fold <- vfold_cv(attrition_train, v = 4)
+#print(trees_fold)
+doParallel::registerDoParallel()
+    set.seed(3)
+    tune_res <- tune_grid(
+      tune_wf,
+      resamples = trees_fold,
+      grid = 20
+    )    
+    tune_res %>%
+      collect_metrics()
+    tune_res %>%
+      select_best("accuracy")
+```
+
+
