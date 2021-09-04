@@ -1,7 +1,9 @@
 
 # LIBRARIES ---------------------------------------------------------------
 listOfPackages <-c("tidyverse","magrittr","tidymodels",
-                   "ROCR","vip", "ranger","recipes","randomForest","caret")
+                   "ROCR","vip", "ranger","recipes",
+                   "randomForest",
+                   "caret", "doParallel")
 
 for (i in listOfPackages){
   if(! i %in% installed.packages()){
@@ -132,11 +134,118 @@ tune_spec <- rand_forest(
 ) %>%
   set_mode("classification") %>%
   set_engine("ranger")
+
 # Workflow
 tune_wf <- workflow() %>%
   add_recipe(tree_recipe) %>%
   add_model(tune_spec)
+
 # Cross Validation
 set.seed(2)
 trees_fold <- vfold_cv(attrition_train, v = 4)
 trees_fold  
+
+ 
+registerDoParallel() # you can run without registerParallel, just will take longer
+set.seed(3)
+tune_res <- tune_grid(
+  tune_wf,
+  resamples = trees_fold,
+  grid = 20
+)
+
+tune_res %>%
+  collect_metrics()
+tune_res %>%
+  select_best("accuracy")
+tune_res %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy") %>%
+  select(mean, min_n, mtry) %>%
+  pivot_longer(min_n:mtry,
+               values_to = "value",
+               names_to = "parameter") %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(show.legend = F) +
+  labs(title = "Metric: 'Accuracy'", subtitle = "Hyperparameter: 'min_n' y 'mtry'", x = "value", y = "mean") +
+  facet_wrap(~ parameter, scales = "free_x")
+  ggsave('./images/hyper.png')
+
+rf_grid <- grid_regular(
+  mtry(range = c(7, 12)),
+  min_n(range = c(15, 40)),
+  levels = 5
+)
+set.seed(4)
+regular_res <- tune_grid(
+  tune_wf,
+  resamples = trees_fold,
+  grid = rf_grid
+)
+
+regular_res %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy") %>%
+  mutate(min_n = factor(min_n)) %>%
+  ggplot(aes(mtry, mean, color = min_n)) +
+  geom_line(alpha = 0.5, size = 1.5) +
+  geom_point()
+ggsave("./images/mtry-min_n.png")
+# Choosing best one
+best_accu <- select_best(regular_res, "accuracy")
+final_rf <- finalize_model(
+  tune_spec,
+  best_accu
+)
+# Global Importance
+final_rf %>%
+  set_engine("ranger", importance = "permutation") %>%
+  fit(Attrition ~ .,
+      data = juice(tree_prep)) %>% 
+  vip(geom = "point")
+ggsave("./images/featureImportance.png")
+
+
+# Final Workflow
+final_wf <- workflow() %>%
+  add_recipe(tree_recipe) %>%
+  add_model(final_rf)
+
+final_res <- final_wf %>%
+  last_fit(attrition_split)
+
+final_res %>%
+  collect_metrics()
+
+# METRICS
+pred_as_df <- as.data.frame(final_res$.predictions)
+
+my_table_2 <- table(attrition_test$Attrition, pred_as_df$.pred_class, dnn = c("Actual", "Prediction"))
+
+TP_2 <- my_table_2[2,2]
+TN_2 <- my_table_2[1,1]
+FN_2 <- my_table_2[2,1]
+FP_2 <- my_table_2[1,2]
+
+# Accuracy
+# = TP + TN / TP+FP+FN+TN
+sprintf("Accuracy: %f", sum(TP_2,TN_2)/sum(TP_2,TN_2,FN_2,FP_2))
+
+# Precision
+# = TP / TP + FP
+precision_2 <-  TP_2/ sum(TP_2,FP_2)
+sprintf("Precision: %f", precision_2)
+
+# Recall / Sensitivity
+# = TP/ TP + FN 
+recall_2<- TP_2/(sum(TP_2, FN_2))
+sprintf("Recall: %f", recall_2)
+
+# SPECIFICITY
+# = TN / TN + FP 
+specificity_2 <- TN_2/(sum(TN_2,FP_2))
+sprintf("Specificity: %f", specificity_2)
+
+# F1
+F1_2 <- 2 * precision_2 * recall_2 / (precision_2 + recall_2)
+sprintf("F1 score: %f", F1_2)    

@@ -3,8 +3,8 @@ title: "Random Forest - Attrition"
 author: "Adrian Jenkins"
 date: "9/3/2021"
 output:
-  html_document: default
   pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -56,8 +56,52 @@ tune_spec <- rand_forest(
 tune_wf <- workflow() %>%
   add_recipe(tree_recipe) %>%
   add_model(tune_spec)
+# Cross Validation
+set.seed(2)
+trees_fold <- vfold_cv(attrition_train, v = 4)
+#asdf
+
+registerDoParallel()
+set.seed(3)
+tune_res <- tune_grid(
+  tune_wf,
+  resamples = trees_fold,
+  grid = 20
+)  
+
+#
+rf_grid <- grid_regular(
+  mtry(range = c(7, 12)),
+  min_n(range = c(15, 40)),
+  levels = 5
+)
+set.seed(4)
+regular_res <- tune_grid(
+  tune_wf,
+  resamples = trees_fold,
+  grid = rf_grid
+)
+
+######SAVE
+# Choosing best one
+best_accu <- select_best(regular_res, "accuracy")
+final_rf <- finalize_model(
+  tune_spec,
+  best_accu
+)
+
+
+# Final Workflow
+final_wf <- workflow() %>%
+  add_recipe(tree_recipe) %>%
+  add_model(final_rf)
+
+final_res <- final_wf %>%
+  last_fit(attrition_split)
+
 
 ```
+
   
 The dataset is composed of `r nrow(data)` observations and `r ncol(data)` attributes. For this model we will be using 21 out of the original 35 attributes. The variables to include are the following: "Age", “Attrition”, "Business Travel", "Department", "Distance From Home", "Education", "Education Field", "Environment Satisfaction", “Gender”, “Hourly Rate”, "Job Involvement", "Job Level", "Job Role", "Job Satisfaction", "Marital Status", "Monthly Income", "Monthly Rate", "OverTime", "Relationship Satisfaction", "Work Life Balance" and "Years At Company".
   
@@ -132,19 +176,19 @@ F1 <- 2 * precision * recall / (precision + recall)
 sprintf("F1 score: %f", F1)
 ```
   
-Accuracy is defined as: TP + TN/ SUM(TP, TN, FP, FN). This value establishes how good the constructed model is at predicting the correct category. In this case, the model predicts correctly in 86.4% of the cases.
+**Accuracy** is defined as: TP + TN/ SUM(TP, TN, FP, FN). This value establishes how good the constructed model is at predicting the correct category. In this case, the model predicts correctly in 86.4% of the cases.
   
-Precision is defined as: TP / TP + FP. This value establishes the ratio between the positive predictions made by the model and those that are actually positive. In this case, of all the people who left the company, the model correctly predicts 85.7% of the cases.
+**Precision** is defined as: TP / TP + FP. This value establishes the ratio between the positive predictions made by the model and those that are actually positive. In this case, of all the people who left the company, the model correctly predicts 85.7% of the cases.
   
-Sensitivity is defined as: TP/TP+FN. This value indicates the ratio that the model has of correctly predicting against actual values. This metric is focused on when the cost of failing a prediction is much higher than that of an erroneous prediction. For this case, of all the people who left the company, the model was correct in 20% of the cases.
+**Sensitivity** is defined as: TP/TP+FN. This value indicates the ratio that the model has of correctly predicting against actual values. This metric is focused on when the cost of failing a prediction is much higher than that of an erroneous prediction. For this case, of all the people who left the company, the model was correct in 20% of the cases.
   
-Specificity is defined as: TN/TN+FP. This value represents the ratio in which, out of all the observations belonging to the negative class, how many were correctly predicted by the model. For this case, out of a total of 309 people who did not leave the company, the model correctly predicts 99.3% of the observations.
+**Specificity** is defined as: TN/TN+FP. This value represents the ratio in which, out of all the observations belonging to the negative class, how many were correctly predicted by the model. For this case, out of a total of 309 people who did not leave the company, the model correctly predicts 99.3% of the observations.
   
-The "F1 - Score" is defined as: 2 x (Precision x Recall) / Precision + Recall. This metric is used when a balance between specificity and sensitivity is desired. In this case it has a value of 32.4%.
+The **"F1 - Score"** is defined as: 2 x (Precision x Recall) / Precision + Recall. This metric is used when a balance between specificity and sensitivity is desired. In this case it has a value of 32.4%.
   
 The AUC is a graphical representation that illustrates the trade-off between specificity and sensitivity. The closer it approaches the 45-degree diagonal, the less accurate the model. Whereas, the closer it approaches the upper left corner indicates better performance. 
 Below is the ROC Curve and different values where the company should make a decision as a cut-off point, based on its needs and what it is willing to tolerate.
-```{r}
+```{r echo = FALSE}
 probs <- predict(modelo_rf, attrition_test, type = "prob")
 pred_for_ROCR <- prediction(probs[,2], attrition_test$Attrition)
 perf <- performance(pred_for_ROCR, "tpr", "fpr")
@@ -153,43 +197,144 @@ lines(par()$usr[1:2], par()$usr[3:4])
 ```
   
 The value of the Area Under the Curve (AUC) is important to be able to compare models, later we will try to optimize this model. This would be the value of the momentum:
+  
 ```{r echo = FALSE}
 auc.tmp <- performance(pred_for_ROCR,"auc")
 auc <- as.numeric(auc.tmp@y.values)
 print(auc)
 ```
-  
+    
 At this point, it is up to the company to decide on the target and the level of tolerance for false positives and negatives. As an example, it is assumed that the company wants to focus on true positives, setting a minimum of 70% of cases.
+  
 ```{r echo = FALSE}
  prob.cuts.1 <- data.frame(cut = perf@alpha.values[[1]], fpr = perf@x.values[[1]],
 tpr = perf@y.values[[1]])
-
 head(prob.cuts.1[prob.cuts.1$tpr >= 0.7,])
 ```
-  
+    
 By choosing row number 67, the breakpoint would be 0.236, in this scenario each observation has a 70% probability of being classified as a true positive and a 15.2% probability of being classified as a false positive.
   
 As an exercise, it is intended to increase the sensitivity since the cost of losing an employee is high and the increase in false positives does not really represent a major impact.
  
 ### Optimizing Parameters
+  
 Hyper parameters to optimize:
-* 'mtry': number of variables that are randomly selected at each decision point.
+  
+* 'mtry': number of variables that are randomly selected at each decision point.  
 * 'min_n': minimum number of samples needed to split an internal node.
+  
+Cross validation with four folds is used. This method divides the data set into a defined amount and performs the training and evaluation process with each one of them and finally performs a summary of the results obtained to determine the best performing one. 
+  
 ```{r echo = FALSE}
-set.seed(2)
-trees_fold <- vfold_cv(attrition_train, v = 4)
-#print(trees_fold)
-doParallel::registerDoParallel()
-    set.seed(3)
-    tune_res <- tune_grid(
-      tune_wf,
-      resamples = trees_fold,
-      grid = 20
-    )    
-    tune_res %>%
-      collect_metrics()
-    tune_res %>%
-      select_best("accuracy")
+print(trees_fold)
 ```
+  
+Next, the metrics are collected, the best model is chosen and visualized:
+```{r echo = FALSE}
+tune_res %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy") %>%
+  select(mean, min_n, mtry) %>%
+  pivot_longer(min_n:mtry,
+               values_to = "value",
+               names_to = "parameter") %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(show.legend = F) +
+  labs(title = "Metric: 'Accuracy'", subtitle = "Hyperparameters: 'min_n' y 'mtry'", x = "value", y = "mean") +
+  facet_wrap(~ parameter, scales = "free_x")
+```
+  
+This value should be as high as possible, as this will allow a higher accuracy. In this scenario it is clear, at least for the hyper parameter 'mtry', that it is the values around the range between 10 and 15 that provide a high value of accuracy. On the other hand, for the hyper parameter 'min_n' the values are more scattered, so a larger range will be used to find the right one.
+  
+With this information, the model is refined and visualized in a better way:
+```{r echo = FALSE}
+regular_res %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy") %>%
+  mutate(min_n = factor(min_n)) %>%
+  ggplot(aes(mtry, mean, color = min_n)) +
+  geom_line(alpha = 0.5, size = 1.5) +
+  geom_point()
+```
+  
+It is observed that the best values for these hyper parameters would be 9 for 'mtry' and 15 for 'min_n'. Therefore, these values are selected and we proceed to run the model again and observe the global importance that the model gives to the variables:
+```{r echo = FALSE}
+print(final_rf)
+```
+  
+```{r echo = FALSE}
+final_rf %>%
+  set_engine("ranger", importance = "permutation") %>%
+  fit(Attrition ~ .,
+      data = juice(tree_prep)) %>% 
+  vip(geom = "point")
+```
+  
+This last graph is important because it indicates that, globally, the variable 'OverTime' is the one that has the most weight. After this variable, the next two most important variables are: 'Monthly Income' and 'Job Level'.
+  
+Finally, we proceed to see the metrics of the model and then, make the comparison with the first model:
+  
+```{r echo = FALSE}
+final_res %>%
+  collect_metrics()
+
+pred_as_df <- as.data.frame(final_res$.predictions)
+my_table_2 <- table(attrition_test$Attrition, pred_as_df$.pred_class, dnn = c("Actual", "Prediction"))
+
+TP_2 <- my_table_2[2,2]
+TN_2 <- my_table_2[1,1]
+FN_2 <- my_table_2[2,1]
+FP_2 <- my_table_2[1,2]
+
+# Accuracy
+# = TP + TN / TP+FP+FN+TN
+sprintf("Accuracy: %f", sum(TP_2,TN_2)/sum(TP_2,TN_2,FN_2,FP_2))
+
+# Precision
+# = TP / TP + FP
+precision_2 <-  TP_2/ sum(TP_2,FP_2)
+sprintf("Precision: %f", precision_2)
+
+# Recall / Sensitivity
+# = TP/ TP + FN 
+recall_2<- TP_2/(sum(TP_2, FN_2))
+sprintf("Recall: %f", recall_2)
+
+# SPECIFICITY
+# = TN / TN + FP 
+specificity_2 <- TN_2/(sum(TN_2,FP_2))
+sprintf("Specificity: %f", specificity_2)
+
+# F1
+F1_2 <- 2 * precision_2 * recall_2 / (precision_2 + recall_2)
+sprintf("F1 score: %f", F1_2)    
+```
+  
+According to **accuracy**, the model predicts correctly in 85.9% of the cases.
+  
+According to **precision**, of all the people who left the company, the model correctly predicted 68.1% of the cases.
+  
+According to **sensitivity**, of all the people who left the company, the model was correct in 25% of the cases.
+  
+According to **specificity**, of all the people who did not leave the company, the model correctly predicted 97.7% of the observations.
+  
+The **"F1 - Score"** has a value of 36.5%.
+  
+## Comparing Both Models
+| Metric      | First Model | Second Model |
+|-------------|-------------|--------------|
+| Accuracy    | 86.4%       | 85.9%        |
+| AUC         | 85.1%       | 82.6%        |
+| Precision   | 85.7%       | 68.1%        |
+| Sensibility | 20%         | 25%          |
+| Specificity | 99.3%       | 97.7%        |
+| F1-Score    | 32.4%       | 36.5%        |
+  
+The performance of a model is determined by its objective. In this case, the objective was to be able to better detect employees who are at risk of leaving the company. At first glance the 'F1 Score' establishes that overall the second model outperforms the first model by 4.1%. Furthermore, of the total number of people who leave the company, the second model correctly predicts 25% of the observations. This is a 5% improvement over the first model.
+
+Although not an excellent performance, the objective was met by having a higher sensitivity ratio than the predecessor model.
+  
+The code is in './script.R' if is any help for anyone.  
+
 
 
